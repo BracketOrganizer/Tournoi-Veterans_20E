@@ -277,7 +277,6 @@ async function ensureUserDoc(user){
   }
 }
 
-startLiveWatch();
 onAuthStateChanged(auth, async (user)=>{
   if(USER_ROLE === 'spectator' && !user) return;
   if(user){
@@ -1323,6 +1322,7 @@ function stopLiveWatch(){
   if(unsubLiveWatch){ unsubLiveWatch(); unsubLiveWatch=null; }
   if(liveWatchIv){ clearInterval(liveWatchIv); liveWatchIv=null; }
 }
+startLiveWatch();
 
 window.openRegForm = function(){
   const m = document.getElementById('regFormModal');
