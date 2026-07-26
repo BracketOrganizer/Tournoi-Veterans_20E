@@ -277,6 +277,7 @@ async function ensureUserDoc(user){
   }
 }
 
+startLiveWatch();
 onAuthStateChanged(auth, async (user)=>{
   if(USER_ROLE === 'spectator' && !user) return;
   if(user){
@@ -312,15 +313,14 @@ onAuthStateChanged(auth, async (user)=>{
     CURRENT_USER = null; USER_ROLE = null; MANAGER_TEAM_ID = null; MANAGER_EXTRA_TEAM_IDS = []; MANAGER_VIEW_TEAM_ID = null; MANAGER_PENDING_REQUEST = null;
     unsubAll();
     try {
-      const snap = await getDoc(doc(db,'foottournoi20','current'));
+      const snap = await getDoc(doc(db,'foottournoi20','status'));
       if(snap.exists()){
         const d = snap.data();
         ST.liveOpen = d.liveOpen === true;
-        const n = (d.cfg && d.cfg.n) || 20;
-        const slotsLeft = Math.max(0, n - ((d.teams||[]).length));
-        handleRegStatusChange(d.registrationsOpen === true, slotsLeft);
+        handleRegStatusChange(d.registrationsOpen === true, d.slotsLeft);
       }
     } catch(e){}
+    startLiveWatch();
     showLogin();
   }
 });
@@ -409,6 +409,7 @@ function subscribeToTournament(){
     ST.clubOverrides = sanitizeClubOverrides(data.clubOverrides);
     ST.liveOpen = data.liveOpen === true;
     ST.registrationsOpen = data.registrationsOpen === true;
+    updateLiveToggleBtn();
     updateRegOpenBtn();
     refreshCurrentPage();
   });
@@ -417,15 +418,16 @@ async function saveTournament(partial){
   if(!isAdmin() && !isScorer()) return;
   try {
     await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true });
-    // On duplique liveOpen/registrationsOpen dans foottournoi20/status (toujours
-    // lisible publiquement, contrairement à 'current' qui exige liveOpen==true) —
-    // sans ça, un visiteur non connecté ne peut jamais savoir que les
-    // inscriptions sont ouvertes tant que le live n'est pas lancé, et il reste
-    // bloqué sur le dernier état lu quand le live se ferme.
-    if('liveOpen' in partial || 'registrationsOpen' in partial || 'teams' in partial || 'cfg' in partial){
+    // 'current' devient illisible pour un visiteur non connecté dès que
+    // liveOpen=false (règle Firestore). On duplique donc liveOpen et l'état
+    // des inscriptions dans foottournoi20/status, document toujours lisible
+    // publiquement, pour que l'écran de connexion reste fonctionnel.
+    if('liveOpen' in partial){
+      await setDoc(doc(db,'foottournoi20','status'), { liveOpen: partial.liveOpen }, { merge:true });
+    }
+    if('registrationsOpen' in partial || 'teams' in partial || 'cfg' in partial){
       const slotsLeft = Math.max(0, (ST.cfg.n||20) - (ST.teams||[]).length);
       await setDoc(doc(db,'foottournoi20','status'), {
-        liveOpen: ST.liveOpen === true,
         registrationsOpen: ST.registrationsOpen === true,
         slotsLeft
       }, { merge:true });
@@ -1267,8 +1269,9 @@ function updateRegOpenBtn(){
 }
 
 // Affiche/masque le bouton "S'inscrire" sur l'écran de connexion selon
-// l'état public (lu directement dans le doc 'current', publiquement lisible
-// même sans connexion sur cette appli).
+// l'état public (lu depuis foottournoi20/status, toujours lisible même sans
+// connexion — 'current' lui est bloqué par les règles Firestore tant que
+// liveOpen n'est pas true).
 let PUBLIC_REG_OPEN = false;
 let PUBLIC_REG_SLOTS = 0;
 function handleRegStatusChange(open, slots){
@@ -1283,6 +1286,42 @@ function updateRegButtonOnLogin(){
   btn.style.display = show ? '' : 'none';
   const full = document.getElementById('regFullNotice');
   if(full) full.style.display = (PUBLIC_REG_OPEN && PUBLIC_REG_SLOTS<=0) ? '' : 'none';
+}
+
+// ══════════════════════════════════════════════════════════
+// SUIVI LIVE PUBLIC — écoute foottournoi20/status (toujours lisible, même
+// sans connexion) pour tenir à jour en temps réel le bouton "Live" du
+// panneau admin et le bouton "S'inscrire" de l'écran de connexion, y
+// compris quand foottournoi20/current devient illisible (liveOpen=false).
+// ══════════════════════════════════════════════════════════
+let unsubLiveWatch = null;
+let liveWatchIv = null; // polling de secours (mobile en veille)
+function startLiveWatch(){
+  if(unsubLiveWatch) return; // déjà actif
+  unsubLiveWatch = onSnapshot(doc(db,'foottournoi20','status'), (snap)=>{
+    if(!snap.exists()) return;
+    const d = snap.data();
+    ST.liveOpen = d.liveOpen === true;
+    updateLiveToggleBtn();
+    handleRegStatusChange(d.registrationsOpen === true, d.slotsLeft);
+  }, (e)=>{ console.warn('startLiveWatch', e); });
+  if(!liveWatchIv){
+    liveWatchIv = setInterval(async ()=>{
+      try {
+        const snap = await getDoc(doc(db,'foottournoi20','status'));
+        if(snap.exists()){
+          const d = snap.data();
+          ST.liveOpen = d.liveOpen === true;
+          updateLiveToggleBtn();
+          handleRegStatusChange(d.registrationsOpen === true, d.slotsLeft);
+        }
+      } catch(e){ /* silencieux : réseau indisponible */ }
+    }, 4000);
+  }
+}
+function stopLiveWatch(){
+  if(unsubLiveWatch){ unsubLiveWatch(); unsubLiveWatch=null; }
+  if(liveWatchIv){ clearInterval(liveWatchIv); liveWatchIv=null; }
 }
 
 window.openRegForm = function(){
@@ -3972,7 +4011,7 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
     <!-- ══ ZONE STAFF ══ -->
     <div style="background:var(--s2);border:2px solid var(--bdr2);border-radius:14px;padding:16px">
       <div style="font-family:'Oswald',sans-serif;font-size:16px;font-weight:700;letter-spacing:1px;color:var(--ylw);text-align:center;margin-bottom:4px;text-transform:uppercase">🔑 Connexion Staff</div>
-      <div style="font-size:11px;color:rgba(255,255,255,.6);text-align:center;margin-bottom:12px">(inclut les responsables d'équipe dont l'inscription a été validée)</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.55);text-align:center;margin-bottom:12px">Organisateurs, arbitres, et responsables d'équipe déjà validés</div>
       <div class="login-form">
         <div>
           <label>Email</label>
