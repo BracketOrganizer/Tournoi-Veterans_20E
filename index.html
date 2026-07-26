@@ -415,7 +415,22 @@ function subscribeToTournament(){
 }
 async function saveTournament(partial){
   if(!isAdmin() && !isScorer()) return;
-  try { await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true }); }
+  try {
+    await setDoc(doc(db,'foottournoi20','current'), { ...partial, updatedAt: serverTimestamp() }, { merge:true });
+    // On duplique liveOpen/registrationsOpen dans foottournoi20/status (toujours
+    // lisible publiquement, contrairement à 'current' qui exige liveOpen==true) —
+    // sans ça, un visiteur non connecté ne peut jamais savoir que les
+    // inscriptions sont ouvertes tant que le live n'est pas lancé, et il reste
+    // bloqué sur le dernier état lu quand le live se ferme.
+    if('liveOpen' in partial || 'registrationsOpen' in partial || 'teams' in partial || 'cfg' in partial){
+      const slotsLeft = Math.max(0, (ST.cfg.n||20) - (ST.teams||[]).length);
+      await setDoc(doc(db,'foottournoi20','status'), {
+        liveOpen: ST.liveOpen === true,
+        registrationsOpen: ST.registrationsOpen === true,
+        slotsLeft
+      }, { merge:true });
+    }
+  }
   catch(e){ console.error('saveTournament', e); alert('Erreur de sauvegarde : '+e.message); }
 }
 function refreshCurrentPage(){
@@ -3956,7 +3971,8 @@ body.tv-mode .hdr-drawer-overlay{ display:none!important; }
 
     <!-- ══ ZONE STAFF ══ -->
     <div style="background:var(--s2);border:2px solid var(--bdr2);border-radius:14px;padding:16px">
-      <div style="font-family:'Oswald',sans-serif;font-size:16px;font-weight:700;letter-spacing:1px;color:var(--ylw);text-align:center;margin-bottom:12px;text-transform:uppercase">🔑 Connexion Staff</div>
+      <div style="font-family:'Oswald',sans-serif;font-size:16px;font-weight:700;letter-spacing:1px;color:var(--ylw);text-align:center;margin-bottom:4px;text-transform:uppercase">🔑 Connexion Staff</div>
+      <div style="font-size:11px;color:rgba(255,255,255,.6);text-align:center;margin-bottom:12px">(inclut les responsables d'équipe dont l'inscription a été validée)</div>
       <div class="login-form">
         <div>
           <label>Email</label>
